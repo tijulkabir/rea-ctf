@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { access } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -15,6 +16,71 @@ const isMcpMode =
   args.length === 1 && (args[0] === "--mcp" || args[0] === "mcp");
 const isMcpDoctorMode = args[0] === "mcp" && args[1] === "doctor";
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+// Auto-load .env from packageRoot or cwd if present
+for (const envDir of [packageRoot, process.cwd()]) {
+  const envFile = join(envDir, ".env");
+  if (existsSync(envFile)) {
+    try {
+      const content = readFileSync(envFile, "utf8");
+      for (const line of content.split("\n")) {
+        const match = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)?\s*$/);
+        if (match) {
+          const key = match[1];
+          let val = (match[2] || "").trim();
+          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+          }
+          if (process.env[key] === undefined && val.length > 0) {
+            process.env[key] = val;
+          }
+        }
+      }
+    } catch {}
+  }
+}
+
+// Auto-discover Ghidra if GHIDRA_INSTALL_DIR is not set or invalid
+const isGhidraValid = (dir) => {
+  try {
+    return Boolean(dir && existsSync(dir) && existsSync(join(dir, "Ghidra", "application.properties")));
+  } catch {
+    return false;
+  }
+};
+
+if (!isGhidraValid(process.env.GHIDRA_INSTALL_DIR)) {
+  const candidateDirs = [
+    resolve(packageRoot, "..", "ghidra"),
+    resolve(packageRoot, "ghidra"),
+    resolve(process.cwd(), "..", "ghidra"),
+    resolve(process.cwd(), "ghidra"),
+    "/usr/share/ghidra",
+    "/usr/lib/ghidra",
+    "/opt/ghidra",
+    "/usr/local/ghidra",
+    "C:\\tools\\ghidra",
+  ].filter(Boolean);
+  for (const candidate of candidateDirs) {
+    if (isGhidraValid(candidate)) {
+      process.env.GHIDRA_INSTALL_DIR = candidate;
+      break;
+    }
+  }
+}
+
+// Default provider to ghidra if available and not explicitly overridden
+if (!process.env.REA_ANALYSIS_PROVIDER && process.env.GHIDRA_INSTALL_DIR) {
+  process.env.REA_ANALYSIS_PROVIDER = "ghidra";
+}
+
+// Auto-discover IDA MCP configuration if config/ida-mcp.json exists
+if (!process.env.REA_IDA_MCP_CONFIG) {
+  const idaCandidate = resolve(packageRoot, "config", "ida-mcp.json");
+  if (existsSync(idaCandidate)) {
+    process.env.REA_IDA_MCP_CONFIG = idaCandidate;
+  }
+}
 
 // Windows home lookup throws for an empty USERPROFILE. Dependencies resolve
 // home during import, before REA's own resolver can apply its account fallback.
